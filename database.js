@@ -31,7 +31,7 @@ const initializeDB = () => {
             coverUrl TEXT NOT NULL
         )`, (err) => {
             if (!err) {
-                populateSongsIfEmpty();
+                //populateSongsIfEmpty();
             }
         });
     });
