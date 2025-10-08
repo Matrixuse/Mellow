@@ -1,0 +1,4 @@
+node_modules
+.env
+music_player.db
+db.sqlite
