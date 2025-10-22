@@ -1,4 +1,4 @@
-const db = require('../config/db');
+const db = require('../database');
 const cloudinary = require('cloudinary').v2;
 const stream = require('stream');
 
@@ -23,7 +23,7 @@ const uploadFileToCloudinary = (fileBuffer, options) => {
 
 const uploadSong = async (req, res) => {
     try {
-        const { title, artist } = req.body;
+        const { title, artist, moods } = req.body;
         const { songFile, coverFile } = req.files;
 
         if (!songFile || !coverFile || !title || !artist) {
@@ -35,6 +35,15 @@ const uploadSong = async (req, res) => {
         const artistsArray = artist.split(',').map(name => name.trim()).filter(Boolean);
         // Hum uss array ko JSON string mein badal rahe hain taaki database mein save kar sakein
         const artistsJsonString = JSON.stringify(artistsArray);
+        
+        // Parse moods from JSON string or use empty array
+        let moodsArray = [];
+        try {
+            moodsArray = moods ? JSON.parse(moods) : [];
+        } catch (e) {
+            moodsArray = [];
+        }
+        const moodsJsonString = JSON.stringify(moodsArray);
 
         const [songUploadResult, coverUploadResult] = await Promise.all([
             uploadFileToCloudinary(songFile[0].buffer, { resource_type: 'video', folder: 'music_app_songs' }),
@@ -44,9 +53,9 @@ const uploadSong = async (req, res) => {
         const songUrl = songUploadResult.secure_url;
         const coverUrl = coverUploadResult.secure_url;
         
-        const sql = 'INSERT INTO songs (title, artist, songUrl, coverUrl) VALUES (?, ?, ?, ?)';
+        const sql = 'INSERT INTO songs (title, artist, songUrl, coverUrl, moods) VALUES (?, ?, ?, ?, ?)';
         // Hum yahan JSON string save kar rahe hain
-        db.run(sql, [title, artistsJsonString, songUrl, coverUrl], function(err) {
+        db.run(sql, [title, artistsJsonString, songUrl, coverUrl, moodsJsonString], function(err) {
             if (err) {
                 console.error("Database save error:", err);
                 return res.status(500).json({ message: 'Failed to save song to database.' });
@@ -57,6 +66,7 @@ const uploadSong = async (req, res) => {
                 artist: artistsArray, // Frontend ko hum array hi bhejenge
                 songUrl,
                 coverUrl,
+                moods: moodsArray,
             });
         });
 
@@ -77,10 +87,19 @@ const getSongs = (req, res) => {
             try {
                 // Koshish karo ki string ko JSON se parse karke array banayein
                 const artists = JSON.parse(song.artist);
-                return { ...song, artist: Array.isArray(artists) ? artists : [song.artist] };
+                const moods = song.moods ? JSON.parse(song.moods) : [];
+                return { 
+                    ...song, 
+                    artist: Array.isArray(artists) ? artists : [song.artist],
+                    moods: Array.isArray(moods) ? moods : []
+                };
             } catch (e) {
                 // Agar parse na ho (puraana, simple text ho), toh use ek array mein daal do
-                return { ...song, artist: [song.artist] };
+                return { 
+                    ...song, 
+                    artist: [song.artist],
+                    moods: []
+                };
             }
         });
 

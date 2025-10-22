@@ -1,4 +1,6 @@
 const jwt = require('jsonwebtoken');
+const db = require('../database');
+const bcrypt = require('bcryptjs');
 
 // Yeh normal user ke liye "Security Guard" hai
 const protect = (req, res, next) => {
@@ -13,22 +15,69 @@ const protect = (req, res, next) => {
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
             // User ki ID token se nikaal kar request mein daalna
+            // Also attach common optional fields if present (isAdmin, email, name)
             req.user = { id: decoded.id };
-            next(); // Sab theek hai, aage badho
+            if (decoded.isAdmin !== undefined) req.user.isAdmin = decoded.isAdmin;
+            if (decoded.email) req.user.email = decoded.email;
+            if (decoded.name) req.user.name = decoded.name;
+            return next(); // Sab theek hai, aage badho
         } catch (error) {
             console.error(error);
             if (error.name === 'TokenExpiredError') {
                 return res.status(401).json({ message: 'Token expired' });
             }
-            res.status(401).json({ message: 'Not authorized, token failed' });
+            return res.status(401).json({ message: 'Not authorized, token failed' });
         }
     }
 
     if (!token) {
-        res.status(401).json({ message: 'Not authorized, no token' });
+        return res.status(401).json({ message: 'Not authorized, no token' });
     }
 };
 
 // Humne yahan se adminProtect hata diya hai
-module.exports = { protect };
+// Admin credentials that the frontend expects
+const ADMIN_USERNAME = 'Admin';
+const ADMIN_EMAIL = 'namansdnasharma1486@gmail.com';
+const ADMIN_PASSWORD = 'Naman@Admin04';
+
+// adminProtect: ensures the authenticated user is the admin user
+const adminProtect = async (req, res, next) => {
+    // protect must have run already to attach req.user
+    if (!req.user || !req.user.id) {
+        return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    try {
+        db.get('SELECT * FROM users WHERE id = ?', [req.user.id], async (err, user) => {
+            if (err) {
+                console.error('DB error in adminProtect:', err);
+                return res.status(500).json({ message: 'Database error' });
+            }
+
+            if (!user) {
+                return res.status(401).json({ message: 'User not found' });
+            }
+
+            // Check username and email
+            if (user.name !== ADMIN_USERNAME || user.email !== ADMIN_EMAIL) {
+                return res.status(403).json({ message: 'Forbidden: admin only' });
+            }
+
+            // Verify the stored hashed password matches the known admin password
+            const match = await bcrypt.compare(ADMIN_PASSWORD, user.password);
+            if (!match) {
+                return res.status(403).json({ message: 'Forbidden: admin only' });
+            }
+
+            // All good
+            next();
+        });
+    } catch (error) {
+        console.error('Error in adminProtect:', error);
+        return res.status(500).json({ message: 'Server error' });
+    }
+};
+
+module.exports = { protect, adminProtect };
 
