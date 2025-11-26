@@ -1,5 +1,5 @@
 const cloudinary = require('cloudinary').v2;
-const db = require('../database');
+const connectMongo = require('../config/mongo');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
@@ -14,8 +14,11 @@ cloudinary.config({
 
 async function bulkUploadSongs(songsDirectory, coversDirectory) {
     try {
+        await connectMongo();
+        const Song = require('../models/Song');
+
         console.log('🎵 Bulk Upload Tool - Using App\'s Upload Process');
-        console.log('=' .repeat(60));
+        console.log('='.repeat(60));
         
         if (!fs.existsSync(songsDirectory)) {
             console.error(`❌ Songs directory not found: ${songsDirectory}`);
@@ -69,15 +72,12 @@ async function bulkUploadSongs(songsDirectory, coversDirectory) {
                     uploadFileToCloudinary(coverPath, { resource_type: 'image', folder: 'music_app_covers' })
                 ]);
 
-                // Save to database (same as your app's process)
-                await new Promise((resolve, reject) => {
-                    const sql = 'INSERT INTO songs (title, artist, songUrl, coverUrl) VALUES (?, ?, ?, ?)';
-                    const artistsJsonString = JSON.stringify(artist);
-                    db.run(sql, [title, artistsJsonString, songUploadResult.secure_url, coverUploadResult.secure_url], function(err) {
-                        if (err) reject(err);
-                        else resolve();
-                    });
-                });
+                // Save to database (using MongoDB)
+                try {
+                    await Song.create({ title, artist, songUrl: songUploadResult.secure_url, coverUrl: coverUploadResult.secure_url });
+                } catch (err) {
+                    throw err;
+                }
 
                 console.log(`✅ Uploaded: "${title}" by ${artist.join(', ')}`);
                 uploadedCount++;

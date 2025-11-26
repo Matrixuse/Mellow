@@ -1,7 +1,15 @@
 const db = require('../database');
+let Playlist = null;
+let Song = null;
+try {
+    if (process.env.MONGO_URI) {
+        Playlist = require('../models/Playlist');
+        Song = require('../models/Song');
+    }
+} catch (e) {}
 
 // Create a new playlist
-const createPlaylist = (req, res) => {
+const createPlaylist = async (req, res) => {
     const { name, description, isPublic } = req.body;
     const userId = req.user.id;
 
@@ -9,9 +17,34 @@ const createPlaylist = (req, res) => {
         return res.status(400).json({ message: 'Playlist name is required' });
     }
 
+    // Use MongoDB if configured
+    if (Playlist) {
+        try {
+            const pl = await Playlist.create({
+                name: name.trim(),
+                description: description || '',
+                userId,
+                isPublic: !!isPublic,
+                songs: []
+            });
+            return res.status(201).json({
+                id: pl._id,
+                name: pl.name,
+                description: pl.description,
+                userId: pl.userId,
+                isPublic: pl.isPublic,
+                createdAt: pl.createdAt,
+                songCount: 0
+            });
+        } catch (err) {
+            console.error('Error creating playlist (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to create playlist' });
+        }
+    }
+
+    // Fallback to SQLite (should be removed later)
     const sql = `INSERT INTO playlists (name, description, userId, isPublic) 
                  VALUES (?, ?, ?, ?)`;
-    
     db.run(sql, [name.trim(), description || '', userId, isPublic ? 1 : 0], function(err) {
         if (err) {
             console.error('Error creating playlist:', err);
@@ -31,9 +64,30 @@ const createPlaylist = (req, res) => {
 };
 
 // Get all playlists for the current user
-const getUserPlaylists = (req, res) => {
+const getUserPlaylists = async (req, res) => {
     const userId = req.user.id;
-    
+
+    if (Playlist) {
+        try {
+            const playlists = await Playlist.find({ userId }).sort({ updatedAt: -1 }).populate({ path: 'songs.song', select: 'coverUrl' }).lean();
+            const mapped = playlists.map(pl => ({
+                id: pl._id,
+                name: pl.name,
+                description: pl.description,
+                isPublic: !!pl.isPublic,
+                songCount: (pl.songs || []).length,
+                coverUrl: pl.songs && pl.songs.length ? (pl.songs[0].song ? pl.songs[0].song.coverUrl : null) : null,
+                createdAt: pl.createdAt,
+                updatedAt: pl.updatedAt
+            }));
+            return res.json(mapped);
+        } catch (err) {
+            console.error('Error fetching playlists (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to fetch playlists' });
+        }
+    }
+
+    // Fallback to SQLite
     const sql = `
         SELECT p.*, 
                COUNT(ps.songId) as songCount,
@@ -68,7 +122,7 @@ const getUserPlaylists = (req, res) => {
 };
 
 // Get playlist by ID with songs
-const getPlaylistById = (req, res) => {
+const getPlaylistById = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
 
@@ -141,7 +195,7 @@ const getPlaylistById = (req, res) => {
 };
 
 // Update playlist
-const updatePlaylist = (req, res) => {
+const updatePlaylist = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
     const { name, description, isPublic } = req.body;
@@ -167,7 +221,7 @@ const updatePlaylist = (req, res) => {
 };
 
 // Delete playlist
-const deletePlaylist = (req, res) => {
+const deletePlaylist = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
 
@@ -188,7 +242,7 @@ const deletePlaylist = (req, res) => {
 };
 
 // Add song to playlist
-const addSongToPlaylist = (req, res) => {
+const addSongToPlaylist = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
     const { songId } = req.body;
@@ -251,7 +305,7 @@ const addSongToPlaylist = (req, res) => {
 };
 
 // Remove song from playlist
-const removeSongFromPlaylist = (req, res) => {
+const removeSongFromPlaylist = async (req, res) => {
     const playlistId = req.params.id;
     const songId = req.params.songId;
     const userId = req.user.id;
@@ -287,7 +341,7 @@ const removeSongFromPlaylist = (req, res) => {
 };
 
 // Reorder songs in playlist
-const reorderPlaylistSongs = (req, res) => {
+const reorderPlaylistSongs = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
     const { songIds } = req.body; // Array of song IDs in new order

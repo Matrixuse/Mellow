@@ -1,5 +1,5 @@
 const cloudinary = require('cloudinary').v2;
-const db = require('../database');
+const connectMongo = require('../config/mongo');
 const path = require('path');
 require('dotenv').config();
 
@@ -86,6 +86,16 @@ async function fetchAndUpdateSongs() {
         let updatedCount = 0;
         let newCount = 0;
         
+        // connect to MongoDB
+        try {
+            await connectMongo();
+        } catch (err) {
+            console.error('MongoDB connection failed:', err && err.message ? err.message : err);
+            process.exit(1);
+        }
+
+        const Song = require('../models/Song');
+
         for (const cloudinarySong of songs.resources) {
             const { title, artist } = extractMetadataFromFilename(cloudinarySong.filename);
             const songUrl = cloudinarySong.secure_url;
@@ -94,28 +104,24 @@ async function fetchAndUpdateSongs() {
             const artistsArray = artist.split(',').map(name => name.trim()).filter(Boolean);
             const artistsJsonString = JSON.stringify(artistsArray);
             
-            // Check if song exists
-            db.get('SELECT id FROM songs WHERE songUrl = ?', [songUrl], (err, existingSong) => {
+            // Check if song exists in Mongo
+            try {
+                const existingSong = await Song.findOne({ songUrl }).exec();
                 if (existingSong) {
-                    // Update existing
-                    db.run('UPDATE songs SET title = ?, artist = ?, coverUrl = ? WHERE songUrl = ?', 
-                        [title, artistsJsonString, coverUrl || '', songUrl], (updateErr) => {
-                        if (!updateErr) {
-                            console.log(`✅ Updated: ${title} by ${artist}`);
-                            updatedCount++;
-                        }
-                    });
+                    existingSong.title = title;
+                    existingSong.artist = artist.split(',').map(n => n.trim()).filter(Boolean);
+                    existingSong.coverUrl = coverUrl || '';
+                    await existingSong.save();
+                    console.log(`✅ Updated: ${title} by ${artist}`);
+                    updatedCount++;
                 } else {
-                    // Insert new
-                    db.run('INSERT INTO songs (title, artist, songUrl, coverUrl) VALUES (?, ?, ?, ?)', 
-                        [title, artistsJsonString, songUrl, coverUrl || ''], (insertErr) => {
-                        if (!insertErr) {
-                            console.log(`🆕 Added: ${title} by ${artist}`);
-                            newCount++;
-                        }
-                    });
+                    await Song.create({ title, artist: artist.split(',').map(n => n.trim()).filter(Boolean), songUrl, coverUrl: coverUrl || '' });
+                    console.log(`🆕 Added: ${title} by ${artist}`);
+                    newCount++;
                 }
-            });
+            } catch (err) {
+                console.error('Error updating/inserting song:', err);
+            }
             
             await new Promise(resolve => setTimeout(resolve, 50));
         }

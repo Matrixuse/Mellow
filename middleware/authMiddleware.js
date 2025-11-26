@@ -1,6 +1,10 @@
 const jwt = require('jsonwebtoken');
 const db = require('../database');
 const bcrypt = require('bcryptjs');
+let UserModel = null;
+try {
+    if (process.env.MONGO_URI) UserModel = require('../models/User');
+} catch (e) {}
 
 // Yeh normal user ke liye "Security Guard" hai
 const protect = (req, res, next) => {
@@ -49,6 +53,22 @@ const adminProtect = async (req, res, next) => {
     }
 
     try {
+        // If MongoDB is configured, use User model
+        if (UserModel) {
+            const userDoc = await UserModel.findById(req.user.id).lean();
+            if (!userDoc) return res.status(401).json({ message: 'User not found' });
+
+            if (userDoc.name !== ADMIN_USERNAME || userDoc.email !== ADMIN_EMAIL) {
+                return res.status(403).json({ message: 'Forbidden: admin only' });
+            }
+
+            const match = await bcrypt.compare(ADMIN_PASSWORD, userDoc.password);
+            if (!match) return res.status(403).json({ message: 'Forbidden: admin only' });
+
+            return next();
+        }
+
+        // Fallback to SQLite
         db.get('SELECT * FROM users WHERE id = ?', [req.user.id], async (err, user) => {
             if (err) {
                 console.error('DB error in adminProtect:', err);

@@ -2,6 +2,10 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../database.js');
+let UserModel = null;
+try {
+    if (process.env.MONGO_URI) UserModel = require('../models/User');
+} catch (e) {}
 const router = express.Router();
 
 // --- User Registration ---
@@ -11,6 +15,24 @@ router.post('/register', async (req, res) => {
         return res.status(400).json({ message: 'Please enter all fields' });
     }
 
+    // If MongoDB is available, create user in MongoDB
+    if (UserModel) {
+        try {
+            const exists = await UserModel.findOne({ email }).lean();
+            if (exists) return res.status(400).json({ message: 'User already exists' });
+
+            const salt = await bcrypt.genSalt(10);
+            const hashedPassword = await bcrypt.hash(password, salt);
+            const userDoc = await UserModel.create({ name, email, password: hashedPassword });
+            const token = jwt.sign({ id: userDoc._id, email: userDoc.email, name: userDoc.name }, process.env.JWT_SECRET, { expiresIn: '7d' });
+            return res.status(201).json({ token, user: { id: userDoc._id, name: userDoc.name, email: userDoc.email } });
+        } catch (err) {
+            console.error('MongoDB user creation error:', err);
+            return res.status(500).json({ message: 'Database error on user creation' });
+        }
+    }
+
+    // Fallback to SQLite
     db.get('SELECT email FROM users WHERE email = ?', [email], async (err, user) => {
         if (err) return res.status(500).json({ message: 'Database error on user check' });
         if (user) return res.status(400).json({ message: 'User already exists' });
@@ -29,12 +51,28 @@ router.post('/register', async (req, res) => {
 });
 
 // --- User Login ---
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
         return res.status(400).json({ message: 'Please enter all fields' });
     }
 
+    // If MongoDB is available, authenticate against MongoDB
+    if (UserModel) {
+        try {
+            const userDoc = await UserModel.findOne({ email }).lean();
+            if (!userDoc) return res.status(400).json({ message: 'Invalid credentials' });
+            const isMatch = await bcrypt.compare(password, userDoc.password);
+            if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+            const token = jwt.sign({ id: userDoc._id, email: userDoc.email, name: userDoc.name }, process.env.JWT_SECRET, { expiresIn: '7d' });
+            return res.json({ token, user: { id: userDoc._id, name: userDoc.name, email: userDoc.email } });
+        } catch (err) {
+            console.error('MongoDB login error:', err);
+            return res.status(500).json({ message: 'Database error' });
+        }
+    }
+
+    // Fallback to SQLite
     const sql = 'SELECT * FROM users WHERE email = ?';
     db.get(sql, [email], async (err, user) => {
         if (err) return res.status(500).json({ message: 'Database error' });

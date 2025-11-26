@@ -1,28 +1,38 @@
-const db = require('../database');
+const connectMongo = require('../config/mongo');
 const controller = require('../controllers/playlistController');
 
-// Find test song and playlist
-db.get('SELECT id FROM songs WHERE title = ? LIMIT 1', ['Test Song'], (err, songRow) => {
-  if (err) return console.error('Error fetching song', err);
-  if (!songRow) return console.error('Test Song not found');
+const run = async () => {
+  try {
+    await connectMongo();
+  } catch (err) {
+    console.error('Mongo connection failed:', err && err.message ? err.message : err);
+    process.exit(1);
+  }
 
-  db.get('SELECT id FROM playlists WHERE name = ? LIMIT 1', ['Test Playlist'], (err, plRow) => {
-    if (err) return console.error('Error fetching playlist', err);
-    if (!plRow) return console.error('Test Playlist not found');
+  const Song = require('../models/Song');
+  const Playlist = require('../models/Playlist');
 
-    const req = {
-      params: { id: plRow.id },
-      body: { songId: songRow.id },
-      user: { id: 1 }
-    };
+  const song = await Song.findOne({ title: 'Test Song' }).lean();
+  if (!song) return console.error('Test Song not found');
 
-    const res = {
-      status(code) { this.statusCode = code; return this; },
-      json(obj) { console.log('JSON response', this.statusCode || 200, obj); },
-      send(obj) { console.log('Send response', this.statusCode || 200, obj); }
-    };
+  const pl = await Playlist.findOne({ name: 'Test Playlist' }).lean();
+  if (!pl) return console.error('Test Playlist not found');
 
-    console.log('Calling addSongToPlaylist with', { playlistId: plRow.id, songId: songRow.id });
-    controller.addSongToPlaylist(req, res);
-  });
-});
+  const req = {
+    params: { id: pl._id },
+    body: { songId: song._id },
+    user: { id: pl.userId || pl.user || null }
+  };
+
+  const res = {
+    status(code) { this.statusCode = code; return this; },
+    json(obj) { console.log('JSON response', this.statusCode || 200, obj); },
+    send(obj) { console.log('Send response', this.statusCode || 200, obj); }
+  };
+
+  console.log('Calling addSongToPlaylist with', { playlistId: pl._id, songId: song._id });
+  await controller.addSongToPlaylist(req, res);
+  process.exit(0);
+};
+
+run();

@@ -1,5 +1,5 @@
 const cloudinary = require('cloudinary').v2;
-const db = require('../database');
+const connectMongo = require('../config/mongo');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
@@ -122,40 +122,26 @@ async function fetchAndUpdateCloudinarySongs() {
                 const artistsArray = artist.split(',').map(name => name.trim()).filter(Boolean);
                 const artistsJsonString = JSON.stringify(artistsArray);
                 
-                // Check if song already exists in database
-                db.get('SELECT id FROM songs WHERE songUrl = ?', [songUrl], (err, existingSong) => {
-                    if (err) {
-                        console.error(`Database error for ${title}:`, err.message);
-                        errorCount++;
-                        return;
-                    }
-                    
+                // Check if song already exists in MongoDB
+                try {
+                    const Song = require('../models/Song');
+                    const existingSong = await Song.findOne({ songUrl }).exec();
                     if (existingSong) {
-                        // Update existing song
-                        const updateSql = 'UPDATE songs SET title = ?, artist = ?, coverUrl = ? WHERE songUrl = ?';
-                        db.run(updateSql, [title, artistsJsonString, coverUrl || '', songUrl], function(updateErr) {
-                            if (updateErr) {
-                                console.error(`Error updating ${title}:`, updateErr.message);
-                                errorCount++;
-                            } else {
-                                console.log(`✅ Updated: ${title} by ${artist}`);
-                                updatedCount++;
-                            }
-                        });
+                        existingSong.title = title;
+                        existingSong.artist = artist.split(',').map(n => n.trim()).filter(Boolean);
+                        existingSong.coverUrl = coverUrl || '';
+                        await existingSong.save();
+                        console.log(`✅ Updated: ${title} by ${artist}`);
+                        updatedCount++;
                     } else {
-                        // Insert new song
-                        const insertSql = 'INSERT INTO songs (title, artist, songUrl, coverUrl) VALUES (?, ?, ?, ?)';
-                        db.run(insertSql, [title, artistsJsonString, songUrl, coverUrl || ''], function(insertErr) {
-                            if (insertErr) {
-                                console.error(`Error inserting ${title}:`, insertErr.message);
-                                errorCount++;
-                            } else {
-                                console.log(`🆕 Added: ${title} by ${artist}`);
-                                newCount++;
-                            }
-                        });
+                        await Song.create({ title, artist: artist.split(',').map(n => n.trim()).filter(Boolean), songUrl, coverUrl: coverUrl || '' });
+                        console.log(`🆕 Added: ${title} by ${artist}`);
+                        newCount++;
                     }
-                });
+                } catch (err) {
+                    console.error(`Error updating/inserting ${title}:`, err && err.message ? err.message : err);
+                    errorCount++;
+                }
                 
                 // Small delay to avoid overwhelming Cloudinary API
                 await new Promise(resolve => setTimeout(resolve, 100));
@@ -186,54 +172,48 @@ async function fetchAndUpdateCloudinarySongs() {
 }
 
 // Function to show current database songs (for comparison)
-function showCurrentDatabaseSongs() {
+async function showCurrentDatabaseSongs() {
     console.log('\n📋 Current songs in database:');
-    console.log('=' .repeat(60));
+    console.log('='.repeat(60));
     
-    db.all('SELECT id, title, artist, songUrl FROM songs ORDER BY id', [], (err, rows) => {
-        if (err) {
-            console.error('Error fetching database songs:', err.message);
-            return;
-        }
-        
-        if (rows.length === 0) {
+    try {
+        const Song = require('../models/Song');
+        const rows = await Song.find({}).sort({ createdAt: 1 }).lean();
+        if (!rows || rows.length === 0) {
             console.log('No songs found in database.');
             return;
         }
-        
+
         rows.forEach((song, index) => {
-            try {
-                const artists = JSON.parse(song.artist);
-                const artistString = Array.isArray(artists) ? artists.join(', ') : song.artist;
-                console.log(`${index + 1}. ${song.title} by ${artistString}`);
-            } catch (e) {
-                console.log(`${index + 1}. ${song.title} by ${song.artist}`);
-            }
+            const artistString = Array.isArray(song.artist) ? song.artist.join(', ') : (song.artist || 'Unknown');
+            console.log(`${index + 1}. ${song.title} by ${artistString}`);
         });
-        
+
         console.log(`\nTotal songs in database: ${rows.length}`);
-    });
+    } catch (err) {
+        console.error('Error fetching database songs:', err && err.message ? err.message : err);
+    }
 }
 
 // Main execution
 console.log('🎵 Cloudinary Song Fetcher');
-console.log('This script will fetch songs from Cloudinary and update your local database');
+console.log('This script will fetch songs from Cloudinary and update your MongoDB database');
 console.log('with the correct titles and artists based on the filenames.\n');
 
 // Show current database state
-showCurrentDatabaseSongs();
+(async () => {
+    await showCurrentDatabaseSongs();
 
-// Ask user if they want to proceed
-console.log('\nDo you want to fetch and update songs from Cloudinary? (y/n)');
-process.stdin.once('data', (data) => {
-    const input = data.toString().trim().toLowerCase();
-    if (input === 'y' || input === 'yes') {
-        fetchAndUpdateCloudinarySongs();
-    } else {
-        console.log('Operation cancelled.');
-        process.exit(0);
-    }
-});
+    // Ask user if they want to proceed
+    console.log('\nDo you want to fetch and update songs from Cloudinary? (y/n)');
+    process.stdin.once('data', (data) => {
+        const input = data.toString().trim().toLowerCase();
+        if (input === 'y' || input === 'yes') {
+            fetchAndUpdateCloudinarySongs();
+        } else {
+            console.log('Operation cancelled.');
+            process.exit(0);
+        }
+    });
+})();
 
-// Keep the process alive
-setTimeout(() => {}, 10000);

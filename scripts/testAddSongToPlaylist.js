@@ -1,52 +1,61 @@
 const http = require('http');
 require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env') });
-const db = require('../database');
 const jwt = require('jsonwebtoken');
+const connectMongo = require('../config/mongo');
+const http = require('http');
 
 const API_HOST = 'localhost';
 const API_PORT = 5000;
 
-const run = () => {
-  // Build a token for user id 1 (our seed uses id 1)
-  const token = jwt.sign({ id: 1 }, process.env.JWT_SECRET || 'devsecret', { expiresIn: '1d' });
+const run = async () => {
+  try {
+    await connectMongo();
+  } catch (err) {
+    console.error('Mongo connection failed:', err && err.message ? err.message : err);
+    process.exit(1);
+  }
 
-  db.get('SELECT id FROM songs WHERE title = ? LIMIT 1', ['Test Song'], (err, songRow) => {
-    if (err) return console.error('Error fetching song', err);
-    if (!songRow) return console.error('Test Song not found');
+  const Song = require('../models/Song');
+  const Playlist = require('../models/Playlist');
 
-    db.get('SELECT id FROM playlists WHERE name = ? LIMIT 1', ['Test Playlist'], (err, plRow) => {
-      if (err) return console.error('Error fetching playlist', err);
-      if (!plRow) return console.error('Test Playlist not found');
+  const song = await Song.findOne({ title: 'Test Song' }).lean();
+  if (!song) return console.error('Test Song not found');
 
-      const path = `/api/playlists/${plRow.id}/songs`;
-      const body = JSON.stringify({ songId: songRow.id });
+  const pl = await Playlist.findOne({ name: 'Test Playlist' }).lean();
+  if (!pl) return console.error('Test Playlist not found');
 
-      const options = {
-        hostname: API_HOST,
-        port: API_PORT,
-        path,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-          'Authorization': `Bearer ${token}`
-        }
-      };
+  // Build token for playlist owner if available, otherwise default id
+  const userId = pl.userId || pl.user || '1';
+  const token = jwt.sign({ id: String(userId) }, process.env.JWT_SECRET || 'devsecret', { expiresIn: '1d' });
 
-      const req = http.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          console.log('Status', res.statusCode);
-          console.log('Body', data);
-        });
-      });
+  const path = `/api/playlists/${pl._id}/songs`;
+  const body = JSON.stringify({ songId: String(song._id) });
 
-      req.on('error', (e) => console.error('Request error', e));
-      req.write(body);
-      req.end();
+  const options = {
+    hostname: API_HOST,
+    port: API_PORT,
+    path,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      'Authorization': `Bearer ${token}`
+    }
+  };
+
+  const req = http.request(options, (res) => {
+    let data = '';
+    res.on('data', chunk => data += chunk);
+    res.on('end', () => {
+      console.log('Status', res.statusCode);
+      console.log('Body', data);
+      process.exit(0);
     });
   });
+
+  req.on('error', (e) => { console.error('Request error', e); process.exit(1); });
+  req.write(body);
+  req.end();
 };
 
 run();

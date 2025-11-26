@@ -1,26 +1,19 @@
-const db = require('../database');
+const connectMongo = require('../config/mongo');
 
 async function cleanUpIncorrectSongs() {
     try {
+        await connectMongo();
+        const Song = require('../models/Song');
+
         console.log('🧹 Cleaning up songs with incorrect names...');
         
         // Remove songs that have "Admin Upload" titles (these are the incorrectly synced ones)
-        const result = await new Promise((resolve, reject) => {
-            db.run('DELETE FROM songs WHERE title LIKE "Admin Upload%"', function(err) {
-                if (err) reject(err);
-                else resolve({ changes: this.changes });
-            });
-        });
+        const result = await Song.deleteMany({ title: { $regex: '^Admin Upload' } });
 
-        console.log(`✅ Removed ${result.changes} songs with incorrect names`);
+        console.log(`✅ Removed ${result.deletedCount} songs with incorrect names`);
 
         // Get remaining song count
-        const remainingSongs = await new Promise((resolve, reject) => {
-            db.get('SELECT COUNT(*) as count FROM songs', [], (err, row) => {
-                if (err) reject(err);
-                else resolve(row.count);
-            });
-        });
+        const remainingSongs = await Song.countDocuments({});
 
         console.log(`📊 Remaining songs: ${remainingSongs}`);
 

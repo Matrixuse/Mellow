@@ -9,6 +9,16 @@ const playlistRoutes = require('./routes/playlists');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Connect to MongoDB Atlas if MONGO_URI is provided
+try {
+    const connectMongo = require('./config/mongo');
+    connectMongo().catch(err => {
+        console.warn('MongoDB connection could not be established:', err && err.message ? err.message : err);
+    });
+} catch (err) {
+    console.warn('MongoDB connect module not found or failed to load:', err && err.message ? err.message : err);
+}
+
 // --- YAHAN BADLAAV KIYA GAYA HAI ---
 // CORS ko theek kiya gaya hai taaki mobile app se bhi request aa sake
 const corsOptions = {

@@ -1,6 +1,15 @@
-const db = require('../database');
 const cloudinary = require('cloudinary').v2;
 const stream = require('stream');
+
+// If MONGO_URI is present we prefer using MongoDB (Mongoose) for songs
+let SongModel = null;
+try {
+    if (process.env.MONGO_URI) {
+        SongModel = require('../models/Song');
+    }
+} catch (e) {
+    // ignore if model cannot be loaded
+}
 
 cloudinary.config({ 
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME, 
@@ -53,22 +62,32 @@ const uploadSong = async (req, res) => {
         const songUrl = songUploadResult.secure_url;
         const coverUrl = coverUploadResult.secure_url;
         
-        const sql = 'INSERT INTO songs (title, artist, songUrl, coverUrl, moods) VALUES (?, ?, ?, ?, ?)';
-        // Hum yahan JSON string save kar rahe hain
-        db.run(sql, [title, artistsJsonString, songUrl, coverUrl, moodsJsonString], function(err) {
-            if (err) {
-                console.error("Database save error:", err);
-                return res.status(500).json({ message: 'Failed to save song to database.' });
-            }
-            res.status(201).json({
-                id: this.lastID,
+        // Require MongoDB; do not fall back to SQLite anymore
+        if (!SongModel) {
+            console.error('MONGO_URI not configured: cannot save song metadata.');
+            return res.status(500).json({ message: 'Server not configured for MongoDB.' });
+        }
+
+        try {
+            const songDoc = await SongModel.create({
                 title,
-                artist: artistsArray, // Frontend ko hum array hi bhejenge
+                artist: artistsArray,
                 songUrl,
                 coverUrl,
                 moods: moodsArray,
             });
-        });
+            return res.status(201).json({
+                id: songDoc._id,
+                title: songDoc.title,
+                artist: songDoc.artist,
+                songUrl: songDoc.songUrl,
+                coverUrl: songDoc.coverUrl,
+                moods: songDoc.moods,
+            });
+        } catch (err) {
+            console.error('MongoDB save error:', err);
+            return res.status(500).json({ message: 'Failed to save song to database.' });
+        }
 
     } catch (error) {
         console.error('Upload Error:', error);
@@ -76,35 +95,27 @@ const uploadSong = async (req, res) => {
     }
 };
 
-const getSongs = (req, res) => {
-    const sql = 'SELECT * FROM songs';
-    db.all(sql, [], (err, rows) => {
-        if (err) { return res.status(500).json({ message: 'Server error' }); }
+const getSongs = async (req, res) => {
+    if (!SongModel) {
+        console.error('MONGO_URI not configured: cannot read songs.');
+        return res.status(500).json({ message: 'Server not configured for MongoDB.' });
+    }
 
-        // --- YAHAN HUMNE BADLAAV KIYA HAI #2 ---
-        // Hum database se aayi har song ki artist string ko waapas array mein badal rahe hain
-        const songsWithArtistArray = rows.map(song => {
-            try {
-                // Koshish karo ki string ko JSON se parse karke array banayein
-                const artists = JSON.parse(song.artist);
-                const moods = song.moods ? JSON.parse(song.moods) : [];
-                return { 
-                    ...song, 
-                    artist: Array.isArray(artists) ? artists : [song.artist],
-                    moods: Array.isArray(moods) ? moods : []
-                };
-            } catch (e) {
-                // Agar parse na ho (puraana, simple text ho), toh use ek array mein daal do
-                return { 
-                    ...song, 
-                    artist: [song.artist],
-                    moods: []
-                };
-            }
-        });
-
-        res.status(200).json(songsWithArtistArray);
-    });
+    try {
+        const docs = await SongModel.find({}).sort({ createdAt: -1 }).lean().exec();
+        const mapped = docs.map(doc => ({
+            id: doc._id,
+            title: doc.title,
+            artist: doc.artist,
+            songUrl: doc.songUrl,
+            coverUrl: doc.coverUrl,
+            moods: doc.moods || []
+        }));
+        res.status(200).json(mapped);
+    } catch (err) {
+        console.error('MongoDB fetch error:', err);
+        res.status(500).json({ message: 'Server error' });
+    }
 };
 
 module.exports = { getSongs, uploadSong };

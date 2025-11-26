@@ -1,19 +1,17 @@
-const db = require('../database');
+const connectMongo = require('../config/mongo');
 
 async function quickRename() {
     try {
+        await connectMongo();
+        const Song = require('../models/Song');
+
         console.log('🚀 Quick Rename Tool - Giving generic names to unknown songs');
-        console.log('=' .repeat(60));
+        console.log('='.repeat(60));
         
         // Get songs that need renaming
-        const songs = await new Promise((resolve, reject) => {
-            db.all('SELECT id, title, songUrl FROM songs WHERE title = "Unknown Song" ORDER BY id', [], (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
+        const songs = await Song.find({ title: 'Unknown Song' }).sort({ _id: 1 }).lean();
 
-        if (songs.length === 0) {
+        if (!songs || songs.length === 0) {
             console.log('✅ No songs need renaming!');
             return;
         }
@@ -50,13 +48,7 @@ async function quickRename() {
                 songInfo.artist;
 
             // Update database
-            await new Promise((resolve, reject) => {
-                const sql = 'UPDATE songs SET title = ?, artist = ? WHERE id = ?';
-                db.run(sql, [title, JSON.stringify([artist]), song.id], function(err) {
-                    if (err) reject(err);
-                    else resolve();
-                });
-            });
+            await Song.findByIdAndUpdate(song._id, { title, artist: [artist] });
 
             console.log(`✅ Renamed: "${title}" by ${artist}`);
             updatedCount++;
