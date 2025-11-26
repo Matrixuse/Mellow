@@ -5,13 +5,11 @@ const bcrypt = require('bcryptjs');
 // Get UserModel dynamically
 function getUserModel() {
     try {
-        if (process.env.MONGO_URI) {
-            return require('../models/User');
-        }
+        return require('../models/User');
     } catch (e) {
         console.error('Error loading UserModel:', e.message);
+        return null;
     }
-    return null;
 }
 
 // Yeh normal user ke liye "Security Guard" hai

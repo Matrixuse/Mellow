@@ -2,24 +2,23 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const mongoose = require('mongoose');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Connect to MongoDB Atlas if MONGO_URI is provided - DO THIS FIRST
-let mongoConnected = false;
-(async () => {
-    try {
-        const connectMongo = require('./config/mongo');
-        await connectMongo();
-        mongoConnected = true;
-        console.log('MongoDB initialization completed');
-    } catch (err) {
-        console.warn('MongoDB connection could not be established:', err && err.message ? err.message : err);
-    }
-})();
+// Initialize MongoDB connection synchronously at startup
+if (process.env.MONGO_URI) {
+    mongoose.connect(process.env.MONGO_URI)
+        .then(() => {
+            console.log(`MongoDB Atlas Connected: ${mongoose.connection.host}`);
+        })
+        .catch(err => {
+            console.error(`Error connecting to MongoDB: ${err.message}`);
+        });
+}
 
-// Load routes after MongoDB attempt (they will check if models loaded)
+// Load routes AFTER mongoose module is initialized
 const authRoutes = require('./routes/auth');
 const songRoutes = require('./routes/songs');
 const playlistRoutes = require('./routes/playlists');
