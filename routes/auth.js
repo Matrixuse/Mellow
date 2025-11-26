@@ -2,11 +2,19 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../database.js');
-let UserModel = null;
-try {
-    if (process.env.MONGO_URI) UserModel = require('../models/User');
-} catch (e) {}
 const router = express.Router();
+
+// Get UserModel dynamically - this ensures it's only loaded after MongoDB connects
+function getUserModel() {
+    try {
+        if (process.env.MONGO_URI) {
+            return require('../models/User');
+        }
+    } catch (e) {
+        console.error('Error loading UserModel:', e.message);
+    }
+    return null;
+}
 
 // --- User Registration ---
 router.post('/register', async (req, res) => {
@@ -14,6 +22,8 @@ router.post('/register', async (req, res) => {
     if (!name || !email || !password) {
         return res.status(400).json({ message: 'Please enter all fields' });
     }
+
+    const UserModel = getUserModel();
 
     // If MongoDB is available, create user in MongoDB
     if (UserModel) {
@@ -56,6 +66,8 @@ router.post('/login', async (req, res) => {
     if (!email || !password) {
         return res.status(400).json({ message: 'Please enter all fields' });
     }
+
+    const UserModel = getUserModel();
 
     // If MongoDB is available, authenticate against MongoDB
     if (UserModel) {

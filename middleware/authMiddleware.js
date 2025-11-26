@@ -1,10 +1,18 @@
 const jwt = require('jsonwebtoken');
 const db = require('../database');
 const bcrypt = require('bcryptjs');
-let UserModel = null;
-try {
-    if (process.env.MONGO_URI) UserModel = require('../models/User');
-} catch (e) {}
+
+// Get UserModel dynamically
+function getUserModel() {
+    try {
+        if (process.env.MONGO_URI) {
+            return require('../models/User');
+        }
+    } catch (e) {
+        console.error('Error loading UserModel:', e.message);
+    }
+    return null;
+}
 
 // Yeh normal user ke liye "Security Guard" hai
 const protect = (req, res, next) => {
@@ -51,6 +59,8 @@ const adminProtect = async (req, res, next) => {
     if (!req.user || !req.user.id) {
         return res.status(401).json({ message: 'Not authorized' });
     }
+
+    const UserModel = getUserModel();
 
     try {
         // If MongoDB is configured, use User model

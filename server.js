@@ -2,22 +2,27 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const authRoutes = require('./routes/auth');
-const songRoutes = require('./routes/songs');
-const playlistRoutes = require('./routes/playlists');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Connect to MongoDB Atlas if MONGO_URI is provided
-try {
-    const connectMongo = require('./config/mongo');
-    connectMongo().catch(err => {
+// Connect to MongoDB Atlas if MONGO_URI is provided - DO THIS FIRST
+let mongoConnected = false;
+(async () => {
+    try {
+        const connectMongo = require('./config/mongo');
+        await connectMongo();
+        mongoConnected = true;
+        console.log('MongoDB initialization completed');
+    } catch (err) {
         console.warn('MongoDB connection could not be established:', err && err.message ? err.message : err);
-    });
-} catch (err) {
-    console.warn('MongoDB connect module not found or failed to load:', err && err.message ? err.message : err);
-}
+    }
+})();
+
+// Load routes after MongoDB attempt (they will check if models loaded)
+const authRoutes = require('./routes/auth');
+const songRoutes = require('./routes/songs');
+const playlistRoutes = require('./routes/playlists');
 
 // --- YAHAN BADLAAV KIYA GAYA HAI ---
 // CORS ko theek kiya gaya hai taaki mobile app se bhi request aa sake
