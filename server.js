@@ -39,6 +39,20 @@ app.use(express.json());
 app.use('/songs', express.static(path.join(__dirname, 'public/songs')));
 app.use('/covers', express.static(path.join(__dirname, 'public/covers')));
 
+// Health endpoint for debugging MongoDB connection from deployed service
+app.get('/api/health', (req, res) => {
+    const state = mongoose.connection.readyState; // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+    const info = {
+        mongoReadyState: state,
+        mongoHost: mongoose.connection && mongoose.connection.host ? mongoose.connection.host : null,
+        timestamp: new Date().toISOString(),
+    };
+    if (state !== 1) {
+        return res.status(503).json({ ok: false, message: 'MongoDB not connected', info });
+    }
+    return res.json({ ok: true, message: 'OK', info });
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/songs', songRoutes);
