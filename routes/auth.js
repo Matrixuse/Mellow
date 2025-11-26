@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../database.js');
+const mongoose = require('mongoose');
 const router = express.Router();
 
 // Get UserModel - will be available after mongoose connects
@@ -9,7 +10,7 @@ function getUserModel() {
     try {
         return require('../models/User');
     } catch (e) {
-        console.error('Error loading UserModel:', e.message);
+        console.error('Error loading UserModel:', e && e.message ? e.message : e);
         return null;
     }
 }
@@ -25,6 +26,12 @@ router.post('/register', async (req, res) => {
 
     // If MongoDB is available, create user in MongoDB
     if (UserModel) {
+        // Ensure mongoose is connected
+        if (mongoose.connection.readyState !== 1) {
+            console.error('Attempt to create user while MongoDB not connected. readyState=', mongoose.connection.readyState);
+            return res.status(500).json({ message: 'Database not connected (MongoDB)' });
+        }
+
         try {
             const exists = await UserModel.findOne({ email });
             if (exists) {
@@ -46,8 +53,8 @@ router.post('/register', async (req, res) => {
                 user: { id: userDoc._id, name: userDoc.name, email: userDoc.email }
             });
         } catch (err) {
-            console.error('MongoDB registration error:', err.message);
-            return res.status(500).json({ message: 'Database error on user creation' });
+            console.error('MongoDB registration error:', err && err.message ? err.message : err);
+            return res.status(500).json({ message: 'Database error on user creation', detail: err && err.message ? err.message : String(err) });
         }
     }
 
@@ -80,6 +87,12 @@ router.post('/login', async (req, res) => {
 
     // If MongoDB is available, authenticate against MongoDB
     if (UserModel) {
+        // Ensure mongoose is connected
+        if (mongoose.connection.readyState !== 1) {
+            console.error('Attempt to login while MongoDB not connected. readyState=', mongoose.connection.readyState);
+            return res.status(500).json({ message: 'Database not connected (MongoDB)' });
+        }
+
         try {
             const userDoc = await UserModel.findOne({ email });
             if (!userDoc) {
@@ -102,8 +115,8 @@ router.post('/login', async (req, res) => {
                 user: { id: userDoc._id, name: userDoc.name, email: userDoc.email }
             });
         } catch (err) {
-            console.error('MongoDB login error:', err.message);
-            return res.status(500).json({ message: 'Database error' });
+            console.error('MongoDB login error:', err && err.message ? err.message : err);
+            return res.status(500).json({ message: 'Database error', detail: err && err.message ? err.message : String(err) });
         }
     }
 

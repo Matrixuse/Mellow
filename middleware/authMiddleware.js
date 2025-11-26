@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const db = require('../database');
 const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 
 // Get UserModel dynamically
 function getUserModel() {
@@ -63,7 +64,12 @@ const adminProtect = async (req, res, next) => {
     try {
         // If MongoDB is configured, use User model
         if (UserModel) {
-            const userDoc = await UserModel.findById(req.user.id).lean();
+            if (mongoose.connection.readyState !== 1) {
+                console.error('adminProtect called while MongoDB not connected. readyState=', mongoose.connection.readyState);
+                return res.status(500).json({ message: 'Database not connected (MongoDB)' });
+            }
+
+            const userDoc = await UserModel.findById(req.user.id);
             if (!userDoc) return res.status(401).json({ message: 'User not found' });
 
             if (userDoc.name !== ADMIN_USERNAME || userDoc.email !== ADMIN_EMAIL) {
