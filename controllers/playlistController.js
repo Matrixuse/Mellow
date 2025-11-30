@@ -1,12 +1,22 @@
-const db = require('../database');
 let Playlist = null;
 let Song = null;
 try {
-    if (process.env.MONGO_URI) {
-        Playlist = require('../models/Playlist');
-        Song = require('../models/Song');
+    // Prefer Mongoose models. If Mongo is not configured, we will return
+    // an explicit error instead of attempting to use the removed SQLite shim.
+    Playlist = require('../models/Playlist');
+    Song = require('../models/Song');
+} catch (e) {
+    // models not available (likely Mongo not configured)
+    Playlist = null;
+    Song = null;
+}
+
+function requireMongoOrFail(res) {
+    if (!Playlist || !Song) {
+        return res.status(500).json({ message: 'Server not configured for MongoDB. Please set MONGO_URI and restart.' });
     }
-} catch (e) {}
+    return null;
+}
 
 // Create a new playlist
 const createPlaylist = async (req, res) => {
@@ -17,7 +27,10 @@ const createPlaylist = async (req, res) => {
         return res.status(400).json({ message: 'Playlist name is required' });
     }
 
-    // Use MongoDB if configured
+    // Ensure Mongo is configured
+    if (requireMongoOrFail(res)) return;
+
+    // Use MongoDB
     if (Playlist) {
         try {
             const pl = await Playlist.create({
@@ -42,30 +55,14 @@ const createPlaylist = async (req, res) => {
         }
     }
 
-    // Fallback to SQLite (should be removed later)
-    const sql = `INSERT INTO playlists (name, description, userId, isPublic) 
-                 VALUES (?, ?, ?, ?)`;
-    db.run(sql, [name.trim(), description || '', userId, isPublic ? 1 : 0], function(err) {
-        if (err) {
-            console.error('Error creating playlist:', err);
-            return res.status(500).json({ message: 'Failed to create playlist' });
-        }
-
-        res.status(201).json({
-            id: this.lastID,
-            name: name.trim(),
-            description: description || '',
-            userId,
-            isPublic: isPublic || false,
-            createdAt: new Date().toISOString(),
-            songCount: 0
-        });
-    });
+    // No SQLite fallback: we require MongoDB in production.
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
 };
 
 // Get all playlists for the current user
 const getUserPlaylists = async (req, res) => {
     const userId = req.user.id;
+    if (requireMongoOrFail(res)) return;
 
     if (Playlist) {
         try {
@@ -87,111 +84,67 @@ const getUserPlaylists = async (req, res) => {
         }
     }
 
-    // Fallback to SQLite
-    const sql = `
-        SELECT p.*, 
-               COUNT(ps.songId) as songCount,
-               s.coverUrl as coverUrl
-        FROM playlists p
-        LEFT JOIN playlist_songs ps ON p.id = ps.playlistId
-        LEFT JOIN songs s ON ps.songId = s.id AND ps.position = 1
-        WHERE p.userId = ?
-        GROUP BY p.id
-        ORDER BY p.updatedAt DESC
-    `;
-
-    db.all(sql, [userId], (err, rows) => {
-        if (err) {
-            console.error('Error fetching playlists:', err);
-            return res.status(500).json({ message: 'Failed to fetch playlists' });
-        }
-
-        const playlists = rows.map(row => ({
-            id: row.id,
-            name: row.name,
-            description: row.description,
-            isPublic: row.isPublic === 1,
-            songCount: row.songCount || 0,
-            coverUrl: row.coverUrl || null,
-            createdAt: row.createdAt,
-            updatedAt: row.updatedAt
-        }));
-
-        res.json(playlists);
-    });
+    // No SQLite fallback available in this deployment.
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
 };
 
 // Get playlist by ID with songs
 const getPlaylistById = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
+    if (requireMongoOrFail(res)) return;
 
-    // First, fetch the playlist and decide access based on ownership or public flag
-    const checkSql = 'SELECT * FROM playlists WHERE id = ?';
-    db.get(checkSql, [playlistId], (err, playlist) => {
-        if (err) {
-            console.error('Error checking playlist access:', err);
-            return res.status(500).json({ message: 'Database error' });
-        }
+    // Using MongoDB
+    if (Playlist) {
+        try {
+            const pl = await Playlist.findById(playlistId).populate({ path: 'songs.song' }).lean();
+            if (!pl) return res.status(404).json({ message: 'Playlist not found' });
 
-        if (!playlist) {
-            return res.status(404).json({ message: 'Playlist not found' });
-        }
-
-        // If playlist is not public and the requesting user is not the owner, deny access
-        const isOwner = Number(playlist.userId) === Number(userId);
-        const isPublic = playlist.isPublic === 1 || playlist.isPublic === true;
-        if (!isOwner && !isPublic) {
-            return res.status(403).json({ message: 'Forbidden: you do not have access to this playlist' });
-        }
-
-        // Get playlist songs with details
-        const songsSql = `
-            SELECT s.*, ps.position, ps.addedAt
-            FROM playlist_songs ps
-            JOIN songs s ON ps.songId = s.id
-            WHERE ps.playlistId = ?
-            ORDER BY ps.position
-        `;
-
-        db.all(songsSql, [playlistId], (err, songs) => {
-            if (err) {
-                console.error('Error fetching playlist songs:', err);
-                return res.status(500).json({ message: 'Failed to fetch playlist songs' });
+            const isOwner = String(pl.userId) === String(userId);
+            const isPublic = !!pl.isPublic;
+            if (!isOwner && !isPublic) {
+                return res.status(403).json({ message: 'Forbidden: you do not have access to this playlist' });
             }
 
-            // Parse artist and moods for each song
-            const songsWithParsedData = songs.map(song => {
-                let artist = [song.artist];
-                let moods = [];
-                
+            // Map songs into expected shape (parse artist/moods similar to SQLite path)
+            const songsWithParsedData = (pl.songs || []).map(item => {
+                const song = item.song || {};
+                let artist = song.artist;
+                let moods = song.moods;
                 try {
-                    artist = JSON.parse(song.artist);
-                    moods = song.moods ? JSON.parse(song.moods) : [];
-                } catch (e) {
-                    // Keep original values if parsing fails
-                }
+                    if (typeof artist === 'string') artist = JSON.parse(artist);
+                } catch (e) { artist = song.artist; }
+                try {
+                    if (typeof moods === 'string') moods = JSON.parse(moods);
+                } catch (e) { moods = song.moods; }
 
-                return {
-                    ...song,
-                    artist: Array.isArray(artist) ? artist : [song.artist],
-                    moods: Array.isArray(moods) ? moods : []
-                };
+                return Object.assign({}, song, {
+                    artist: Array.isArray(artist) ? artist : (artist ? [artist] : []),
+                    moods: Array.isArray(moods) ? moods : (moods ? [moods] : []),
+                    position: item.position || null,
+                    addedAt: item.addedAt || null
+                });
             });
 
-            res.json({
-                id: playlist.id,
-                name: playlist.name,
-                description: playlist.description,
-                isPublic: playlist.isPublic === 1,
-                coverUrl: playlist.coverUrl,
-                createdAt: playlist.createdAt,
-                updatedAt: playlist.updatedAt,
+            return res.json({
+                id: pl._id,
+                name: pl.name,
+                description: pl.description,
+                isPublic: !!pl.isPublic,
+                coverUrl: pl.coverUrl,
+                createdAt: pl.createdAt,
+                updatedAt: pl.updatedAt,
                 songs: songsWithParsedData,
                 songCount: songsWithParsedData.length
             });
-        });
-    });
+        } catch (err) {
+            console.error('Error fetching playlist (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to fetch playlist' });
+        }
+    }
+
+    // No SQLite fallback in production deployment.
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
 };
 
 // Update playlist
@@ -199,6 +152,23 @@ const updatePlaylist = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
     const { name, description, isPublic } = req.body;
+    if (requireMongoOrFail(res)) return;
+
+    // Mongo implementation
+    if (Playlist) {
+        try {
+            const updated = await Playlist.findOneAndUpdate(
+                { _id: playlistId, userId: userId },
+                { name: name, description: description || '', isPublic: !!isPublic, updatedAt: Date.now() },
+                { new: true }
+            );
+            if (!updated) return res.status(404).json({ message: 'Playlist not found' });
+            return res.json({ message: 'Playlist updated successfully' });
+        } catch (err) {
+            console.error('Error updating playlist (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to update playlist' });
+        }
+    }
 
     const sql = `
         UPDATE playlists 
@@ -224,6 +194,17 @@ const updatePlaylist = async (req, res) => {
 const deletePlaylist = async (req, res) => {
     const playlistId = req.params.id;
     const userId = req.user.id;
+    // If using MongoDB, delete using the Playlist model
+    if (Playlist) {
+        try {
+            const deleted = await Playlist.findOneAndDelete({ _id: playlistId, userId: userId });
+            if (!deleted) return res.status(404).json({ message: 'Playlist not found' });
+            return res.json({ message: 'Playlist deleted successfully' });
+        } catch (err) {
+            console.error('Error deleting playlist (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to delete playlist' });
+        }
+    }
 
     const sql = 'DELETE FROM playlists WHERE id = ? AND userId = ?';
     
@@ -251,57 +232,34 @@ const addSongToPlaylist = async (req, res) => {
         return res.status(400).json({ message: 'Song ID is required' });
     }
 
-    // Check if playlist belongs to user
-    db.get('SELECT id FROM playlists WHERE id = ? AND userId = ?', [playlistId, userId], (err, playlist) => {
-        if (err) {
-            console.error('Error checking playlist access:', err);
-            return res.status(500).json({ message: 'Database error' });
+    // Mongo implementation
+    if (Playlist) {
+        try {
+            const pl = await Playlist.findOne({ _id: playlistId, userId });
+            if (!pl) return res.status(404).json({ message: 'Playlist not found' });
+
+            // Validate song exists
+            const song = await Song.findById(songId).lean();
+            if (!song) return res.status(404).json({ message: 'Song not found' });
+
+            // Check if already present
+            const exists = pl.songs && pl.songs.some(s => String(s.song) === String(songId));
+            if (exists) return res.status(400).json({ message: 'Song already exists in playlist' });
+
+            const nextPosition = (pl.songs ? pl.songs.length : 0) + 1;
+            pl.songs.push({ song: song._id, position: nextPosition, addedAt: new Date() });
+            pl.updatedAt = Date.now();
+            await pl.save();
+
+            console.log(`Added song ${songId} to playlist ${playlistId} at position ${nextPosition} for user ${userId}`);
+            return res.status(201).json({ message: 'Song added to playlist successfully', position: nextPosition });
+        } catch (err) {
+            console.error('Error adding song to playlist (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to add song to playlist' });
         }
+    }
 
-        if (!playlist) {
-            return res.status(404).json({ message: 'Playlist not found' });
-        }
-
-        // Check if song exists
-        db.get('SELECT id FROM songs WHERE id = ?', [songId], (err, song) => {
-            if (err) {
-                console.error('Error checking song:', err);
-                return res.status(500).json({ message: 'Database error' });
-            }
-
-            if (!song) {
-                return res.status(404).json({ message: 'Song not found' });
-            }
-
-            // Get next position in playlist
-            db.get('SELECT MAX(position) as maxPos FROM playlist_songs WHERE playlistId = ?', [playlistId], (err, result) => {
-                if (err) {
-                    console.error('Error getting next position:', err);
-                    return res.status(500).json({ message: 'Database error' });
-                }
-
-                const nextPosition = (result.maxPos || 0) + 1;
-
-                // Add song to playlist
-                const insertSql = 'INSERT INTO playlist_songs (playlistId, songId, position) VALUES (?, ?, ?)';
-                db.run(insertSql, [playlistId, songId, nextPosition], function(err) {
-                    if (err) {
-                        if (err.message.includes('UNIQUE constraint failed')) {
-                            return res.status(400).json({ message: 'Song already exists in playlist' });
-                        }
-                        console.error('Error adding song to playlist:', err);
-                        return res.status(500).json({ message: 'Failed to add song to playlist' });
-                    }
-
-                    // Update playlist timestamp
-                    db.run('UPDATE playlists SET updatedAt = CURRENT_TIMESTAMP WHERE id = ?', [playlistId]);
-
-                    console.log(`Added song ${songId} to playlist ${playlistId} at position ${nextPosition} for user ${userId}`);
-                    res.status(201).json({ message: 'Song added to playlist successfully', position: nextPosition });
-                });
-            });
-        });
-    });
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
 };
 
 // Remove song from playlist
@@ -309,35 +267,31 @@ const removeSongFromPlaylist = async (req, res) => {
     const playlistId = req.params.id;
     const songId = req.params.songId;
     const userId = req.user.id;
+    if (requireMongoOrFail(res)) return;
 
-    // Check if playlist belongs to user
-    db.get('SELECT id FROM playlists WHERE id = ? AND userId = ?', [playlistId, userId], (err, playlist) => {
-        if (err) {
-            console.error('Error checking playlist access:', err);
-            return res.status(500).json({ message: 'Database error' });
+    // Mongo implementation
+    if (Playlist) {
+        try {
+            const pl = await Playlist.findOne({ _id: playlistId, userId });
+            if (!pl) return res.status(404).json({ message: 'Playlist not found' });
+
+            const idx = (pl.songs || []).findIndex(s => String(s.song) === String(songId));
+            if (idx === -1) return res.status(404).json({ message: 'Song not found in playlist' });
+
+            // remove and reindex positions
+            pl.songs.splice(idx, 1);
+            pl.songs = pl.songs.map((it, i) => ({ ...it.toObject ? it.toObject() : it, position: i + 1 }));
+            pl.updatedAt = Date.now();
+            await pl.save();
+
+            return res.json({ message: 'Song removed from playlist successfully' });
+        } catch (err) {
+            console.error('Error removing song from playlist (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to remove song from playlist' });
         }
+    }
 
-        if (!playlist) {
-            return res.status(404).json({ message: 'Playlist not found' });
-        }
-
-        const sql = 'DELETE FROM playlist_songs WHERE playlistId = ? AND songId = ?';
-        db.run(sql, [playlistId, songId], function(err) {
-            if (err) {
-                console.error('Error removing song from playlist:', err);
-                return res.status(500).json({ message: 'Failed to remove song from playlist' });
-            }
-
-            if (this.changes === 0) {
-                return res.status(404).json({ message: 'Song not found in playlist' });
-            }
-
-            // Update playlist timestamp
-            db.run('UPDATE playlists SET updatedAt = CURRENT_TIMESTAMP WHERE id = ?', [playlistId]);
-
-            res.json({ message: 'Song removed from playlist successfully' });
-        });
-    });
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
 };
 
 // Reorder songs in playlist
@@ -350,42 +304,39 @@ const reorderPlaylistSongs = async (req, res) => {
         return res.status(400).json({ message: 'songIds must be an array' });
     }
 
-    // Check if playlist belongs to user
-    db.get('SELECT id FROM playlists WHERE id = ? AND userId = ?', [playlistId, userId], (err, playlist) => {
-        if (err) {
-            console.error('Error checking playlist access:', err);
-            return res.status(500).json({ message: 'Database error' });
-        }
+    if (requireMongoOrFail(res)) return;
 
-        if (!playlist) {
-            return res.status(404).json({ message: 'Playlist not found' });
-        }
+    // Mongo implementation
+    if (Playlist) {
+        try {
+            const pl = await Playlist.findOne({ _id: playlistId, userId });
+            if (!pl) return res.status(404).json({ message: 'Playlist not found' });
 
-        // Begin transaction
-        db.serialize(() => {
-            db.run('BEGIN TRANSACTION');
+            // Build a map for existing songs
+            const existing = (pl.songs || []).reduce((m, it) => { m[String(it.song)] = it; return m; }, {});
 
-            // Update positions for each song
-            songIds.forEach((songId, index) => {
-                const position = index + 1;
-                db.run('UPDATE playlist_songs SET position = ? WHERE playlistId = ? AND songId = ?', 
-                       [position, playlistId, songId]);
+            // Recompose songs array based on provided songIds, preserving addedAt when possible
+            const newSongs = songIds.map((sid, idx) => {
+                const existingItem = existing[String(sid)];
+                return {
+                    song: existingItem ? existingItem.song : sid,
+                    position: idx + 1,
+                    addedAt: existingItem ? existingItem.addedAt : new Date()
+                };
             });
 
-            // Update playlist timestamp
-            db.run('UPDATE playlists SET updatedAt = CURRENT_TIMESTAMP WHERE id = ?', [playlistId]);
+            pl.songs = newSongs;
+            pl.updatedAt = Date.now();
+            await pl.save();
 
-            db.run('COMMIT', (err) => {
-                if (err) {
-                    console.error('Error reordering playlist songs:', err);
-                    db.run('ROLLBACK');
-                    return res.status(500).json({ message: 'Failed to reorder playlist songs' });
-                }
+            return res.json({ message: 'Playlist songs reordered successfully' });
+        } catch (err) {
+            console.error('Error reordering playlist songs (Mongo):', err);
+            return res.status(500).json({ message: 'Failed to reorder playlist songs' });
+        }
+    }
 
-                res.json({ message: 'Playlist songs reordered successfully' });
-            });
-        });
-    });
+    return res.status(500).json({ message: 'Server not configured for SQLite fallback. Use MongoDB.' });
 };
 
 module.exports = {
