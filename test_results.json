@@ -1,0 +1,7 @@
+﻿{
+    "loginError":  null,
+    "token":  null,
+    "songsError":  null,
+    "playlistCreateError":  null,
+    "reorderNote":  "Not enough songs to reorder"
+}
